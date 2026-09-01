@@ -4,39 +4,33 @@ const express = require('express');
 const app = express();
 app.use(express.urlencoded({ extended: false }));
 
-const SYSTEM_PROMPT = `You are the WhatsApp assistant for Sunrise Dental Clinic.
+// General-purpose assistant, not tied to any one business
+const SYSTEM_PROMPT = `You are a helpful, knowledgeable assistant reachable over WhatsApp.
+Keep replies reasonably concise since this is a chat interface - break up longer explanations
+into short paragraphs rather than one big wall of text. Be direct and substantive, like a
+capable colleague, not overly formal.`;
 
-Rules:
-- Only answer using the clinic info below. Never invent hours, prices, or policies.
-- Keep replies short - 1 to 3 sentences, like a real front-desk person texting.
-- If asked something not covered below, say you're not sure and offer to have the front desk call back.
-- If the user wants to book, collect their name, phone number, and preferred day/time across the conversation.
-- Never mention you are an AI model or name any AI company.
-
-Clinic info:
-Hours: Mon-Fri 9am-7pm, Sat 10am-4pm, closed Sunday.
-Location: 14 Lakeview Road, Bhubaneswar.
-Services: General checkups (₹800), teeth whitening (from ₹4,500), emergency care, kids' dentistry.
-Dentists: Dr. Rao (general), Dr. Mehta (pediatric).
-Insurance: Accepts Star Health, HDFC Ergo, ICICI Lombard, Niva Bupa.`;
-
-// NEW: stores each person's conversation, keyed by their WhatsApp number
-// Note: this resets if the server restarts - fine for now, a real DB comes later
 const conversations = new Map();
+
+// Optional: keep conversations from growing forever (controls cost + speed)
+const MAX_HISTORY_MESSAGES = 20;
 
 app.post('/whatsapp', async (req, res) => {
   const userMessage = req.body.Body;
   const fromNumber = req.body.From;
   console.log(`Message from ${fromNumber}: ${userMessage}`);
 
-  // NEW: get this person's existing history, or start a new one
   if (!conversations.has(fromNumber)) {
     conversations.set(fromNumber, []);
   }
   const history = conversations.get(fromNumber);
 
-  // NEW: add their new message to the history
   history.push({ role: 'user', content: userMessage });
+
+  // NEW: trim old messages so history doesn't grow unbounded
+  if (history.length > MAX_HISTORY_MESSAGES) {
+    history.splice(0, history.length - MAX_HISTORY_MESSAGES);
+  }
 
   try {
     const response = await fetch("https://api.anthropic.com/v1/messages", {
@@ -48,16 +42,20 @@ app.post('/whatsapp', async (req, res) => {
       },
       body: JSON.stringify({
         model: "claude-sonnet-4-6",
-        max_tokens: 300,
+        max_tokens: 800,   // CHANGED: higher, since research answers can run longer than a front-desk reply
         system: SYSTEM_PROMPT,
-        messages: history   // CHANGED: send the whole conversation, not just one message
+        messages: history
       })
     });
 
     const data = await response.json();
-    const reply = data.content?.[0]?.text || "Sorry, could you rephrase that?";
+    let reply = data.content?.[0]?.text || "Sorry, could you rephrase that?";
 
-    // NEW: save the bot's reply into history too, so it remembers what it said
+    // NEW: WhatsApp messages have a length limit - truncate safely if a reply is huge
+    if (reply.length > 1500) {
+      reply = reply.slice(0, 1450) + "\n\n[Reply truncated - ask me to continue]";
+    }
+
     history.push({ role: 'assistant', content: reply });
 
     res.set('Content-Type', 'text/xml');
