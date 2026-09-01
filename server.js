@@ -2,9 +2,8 @@ require('dotenv').config();
 const express = require('express');
 
 const app = express();
-app.use(express.urlencoded({ extended: false })); // Twilio sends form data
+app.use(express.urlencoded({ extended: false }));
 
-// This is your "brain" - same idea as the website widget, just for a different business
 const SYSTEM_PROMPT = `You are the WhatsApp assistant for Sunrise Dental Clinic.
 
 Rules:
@@ -21,11 +20,23 @@ Services: General checkups (₹800), teeth whitening (from ₹4,500), emergency 
 Dentists: Dr. Rao (general), Dr. Mehta (pediatric).
 Insurance: Accepts Star Health, HDFC Ergo, ICICI Lombard, Niva Bupa.`;
 
-// Twilio will POST here every time someone messages your WhatsApp sandbox number
+// NEW: stores each person's conversation, keyed by their WhatsApp number
+// Note: this resets if the server restarts - fine for now, a real DB comes later
+const conversations = new Map();
+
 app.post('/whatsapp', async (req, res) => {
-  const userMessage = req.body.Body;   // the text the customer sent
-  const fromNumber = req.body.From;    // their WhatsApp number
+  const userMessage = req.body.Body;
+  const fromNumber = req.body.From;
   console.log(`Message from ${fromNumber}: ${userMessage}`);
+
+  // NEW: get this person's existing history, or start a new one
+  if (!conversations.has(fromNumber)) {
+    conversations.set(fromNumber, []);
+  }
+  const history = conversations.get(fromNumber);
+
+  // NEW: add their new message to the history
+  history.push({ role: 'user', content: userMessage });
 
   try {
     const response = await fetch("https://api.anthropic.com/v1/messages", {
@@ -39,16 +50,17 @@ app.post('/whatsapp', async (req, res) => {
         model: "claude-sonnet-4-6",
         max_tokens: 300,
         system: SYSTEM_PROMPT,
-        messages: [{ role: "user", content: userMessage }]
+        messages: history   // CHANGED: send the whole conversation, not just one message
       })
     });
 
     const data = await response.json();
     const reply = data.content?.[0]?.text || "Sorry, could you rephrase that?";
 
-    // Reply back in Twilio's expected XML format (TwiML)
+    // NEW: save the bot's reply into history too, so it remembers what it said
+    history.push({ role: 'assistant', content: reply });
+
     res.set('Content-Type', 'text/xml');
-    console.log(JSON.stringify(data, null, 2));
     res.send(`<Response><Message>${reply}</Message></Response>`);
 
   } catch (err) {
