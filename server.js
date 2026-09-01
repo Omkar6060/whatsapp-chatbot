@@ -1,33 +1,26 @@
 require('dotenv').config();
-const express = require('express');
+const TelegramBot = require('node-telegram-bot-api');
 
-const app = express();
-app.use(express.urlencoded({ extended: false }));
+const bot = new TelegramBot(process.env.TELEGRAM_TOKEN, { polling: true });
 
-// General-purpose assistant, not tied to any one business
-const SYSTEM_PROMPT = `You are a helpful, knowledgeable assistant reachable over WhatsApp.
-Keep replies reasonably concise since this is a chat interface - break up longer explanations
-into short paragraphs rather than one big wall of text. Be direct and substantive, like a
-capable colleague, not overly formal.`;
+const SYSTEM_PROMPT = `You are a helpful, knowledgeable assistant.
+Keep replies reasonably concise - break up longer explanations into short paragraphs.
+Be direct and substantive, like a capable colleague, not overly formal.`;
 
 const conversations = new Map();
-
-// Optional: keep conversations from growing forever (controls cost + speed)
 const MAX_HISTORY_MESSAGES = 20;
 
-app.post('/whatsapp', async (req, res) => {
-  const userMessage = req.body.Body;
-  const fromNumber = req.body.From;
-  console.log(`Message from ${fromNumber}: ${userMessage}`);
+bot.on('message', async (msg) => {
+  const chatId = msg.chat.id;
+  const userMessage = msg.text;
+  console.log(`Message from ${chatId}: ${userMessage}`);
 
-  if (!conversations.has(fromNumber)) {
-    conversations.set(fromNumber, []);
+  if (!conversations.has(chatId)) {
+    conversations.set(chatId, []);
   }
-  const history = conversations.get(fromNumber);
-
+  const history = conversations.get(chatId);
   history.push({ role: 'user', content: userMessage });
 
-  // NEW: trim old messages so history doesn't grow unbounded
   if (history.length > MAX_HISTORY_MESSAGES) {
     history.splice(0, history.length - MAX_HISTORY_MESSAGES);
   }
@@ -42,30 +35,22 @@ app.post('/whatsapp', async (req, res) => {
       },
       body: JSON.stringify({
         model: "claude-sonnet-4-6",
-        max_tokens: 800,   // CHANGED: higher, since research answers can run longer than a front-desk reply
+        max_tokens: 800,
         system: SYSTEM_PROMPT,
         messages: history
       })
     });
 
     const data = await response.json();
-    let reply = data.content?.[0]?.text || "Sorry, could you rephrase that?";
-
-    // NEW: WhatsApp messages have a length limit - truncate safely if a reply is huge
-    if (reply.length > 1500) {
-      reply = reply.slice(0, 1450) + "\n\n[Reply truncated - ask me to continue]";
-    }
+    const reply = data.content?.[0]?.text || "Sorry, could you rephrase that?";
 
     history.push({ role: 'assistant', content: reply });
-
-    res.set('Content-Type', 'text/xml');
-    res.send(`<Response><Message>${reply}</Message></Response>`);
+    bot.sendMessage(chatId, reply);
 
   } catch (err) {
     console.error(err);
-    res.set('Content-Type', 'text/xml');
-    res.send(`<Response><Message>Sorry, something went wrong. Please try again.</Message></Response>`);
+    bot.sendMessage(chatId, "Sorry, something went wrong. Please try again.");
   }
 });
 
-app.listen(3000, () => console.log('Server running on http://localhost:3000'));
+console.log('Telegram bot running...');
